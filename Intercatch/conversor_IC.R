@@ -2,6 +2,8 @@
 
 library(dplyr)
 
+ano <- 2020
+
 # Importa dados
 land <- read.csv("C://Google Drive//dados_pnab//desembarques//ceph_land.csv",
                sep = ",", dec = ".")
