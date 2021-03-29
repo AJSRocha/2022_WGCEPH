@@ -75,4 +75,8 @@ write.table(teste,
             ,sep="",row.names = F,col.names = F,quote=F)
 }
 
-
+# resumo de desembarques OTB
+land_export %>% 
+  filter(ARTE_EU == 'MIS_MIS_0_0_0') %>% 
+  group_by(COD_FAO) %>%
+  summarise(tons = sum(QESTIMADA/1000))

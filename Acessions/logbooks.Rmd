@@ -3,3 +3,72 @@ title: "WGCEPH 2020 - effort data"
 output: html_notebook
 ---
 
+**dpeYYYY_correct.xxx** – Diários de Pesca Electrónicos (dpe) para o ano YYYY, corrigidos, mantendo os dados por lance.
+
+**dppYYYY_correct.xxx** – Diários de pesca em papel para o ano YYYY, corrigidos
+
+```{r setup, echo = F, include = F, warning = F}
+library(dplyr)
+library(data.table)
+```
+
+```{r}
+load("C:/Google Drive/dados_pnab/logbooks/dpe2020_correct.RData")
+fleet <- read.csv('C:/Google Drive/dados_pnab/fleet_register/vesselRegistryListResults.csv',
+                  sep = ";",
+                  dec = '.',
+                  na.strings = "")
+
+fleet <-
+fleet %>%
+  filter(CFR %in% unique(df$IEMBARCA)) %>%
+  mutate(Event.Start.Date = as.POSIXct(Event.Start.Date, format = '%Y-%m-%d'),
+         Event.End.Date = as.POSIXct(Event.End.Date, format = '%Y-%m-%d'))
+
+
+```
+
+# Checks realizados:
+
+* Datas (inicio viagem, fim, de viagem, inicio de lance, fim de lance) estao em formato POSIX: Check
+
+* *NA* nas datas - Completo nos lances, 7 entradas sem data de partida ou regresso
+
+* Avaliar nacionalidade dos portos e embarcações
+
+```{r}
+df <- dpe2020.correct
+
+# muda formato da departude data por causa da compatibilidade com SQLite
+df <- df %>%
+  mutate(DATAHORA_INICIO = as.POSIXct(DATAHORA_INICIO))
+
+
+
+df$RETURN_PORTO %>% unique
+
+names(df)
+unique(df$ESPECIE_CODFAO)
+
+unique(fleet$Power.of.main.engine)[grepl("-",
+                                         unique(fleet$Power.of.main.engine))]
+
+fleet[,c()]
+
+df_teste <- df %>%
+  filter(is.na(RETURN_DATAHORA))
+
+df <- setDT(df)
+fleet <- setDT(fleet)
+
+temp <- foverlaps(df, fleet, by.x = )
+
+temp <-  
+ sqldf::sqldf(
+   'SELECT df.*, fleet.[Power.of.main.engine]
+   FROM df LEFT JOIN fleet
+   ON IEMBARCA = CFR and 
+   DATAHORA_INICIO BETWEEN [Event.Start.Date] AND [Event.End.Date]')
+
+```
+
