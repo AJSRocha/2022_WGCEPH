@@ -17,15 +17,17 @@ load("C:/Google Drive/dados_pnab/logbooks/dpe2020_correct.RData")
 fleet <- read.csv('C:/Google Drive/dados_pnab/fleet_register/vesselRegistryListResults.csv',
                   sep = ";",
                   dec = '.',
-                  na.strings = "")
+                  na.strings = "",
+                  encoding = 'utf-8',
+                  quote = "")
 
 fleet <-
 fleet %>%
-  filter(CFR %in% unique(df$IEMBARCA)) %>%
+  # filter(CFR %in% unique(df$IEMBARCA)) %>%
   mutate(Event.Start.Date = as.POSIXct(Event.Start.Date, format = '%Y-%m-%d'),
          Event.End.Date = as.POSIXct(Event.End.Date, format = '%Y-%m-%d'))
 
-
+df <- dpe2020.correct
 ```
 
 # Checks realizados:
@@ -36,39 +38,162 @@ fleet %>%
 
 * Avaliar nacionalidade dos portos e embarcações
 
-```{r}
-df <- dpe2020.correct
+* Há paises marafados que tem datas no campo Power.main
 
+* Uma vez feito o join com o fleet há casos em que não é possível estabelecer o power.main porque
+
+   * Embracações não constam do fleet (embarcações das armações de atum em Olhão, por exemplo);
+   
+   * Embarcações estão listadas como tendo sido abatidas apesar de terem (aparentemente) trabalhado em 2020;
+
+* Confirmar que as regioes estao escritas de forma consistente (em 2020 é seguro restringir a 27.9.a, mas pode haver variantes de grafia)   
+
+```{r}
 # muda formato da departude data por causa da compatibilidade com SQLite
 df <- df %>%
-  mutate(DATAHORA_INICIO = as.POSIXct(DATAHORA_INICIO))
-
-
-
-df$RETURN_PORTO %>% unique
-
-names(df)
-unique(df$ESPECIE_CODFAO)
-
-unique(fleet$Power.of.main.engine)[grepl("-",
-                                         unique(fleet$Power.of.main.engine))]
-
-fleet[,c()]
-
-df_teste <- df %>%
-  filter(is.na(RETURN_DATAHORA))
-
-df <- setDT(df)
-fleet <- setDT(fleet)
-
-temp <- foverlaps(df, fleet, by.x = )
+  mutate(DATAHORA_INICIO = as.POSIXct(DATAHORA_INICIO),
+         DATAHORA_FIM = as.POSIXct(DATAHORA_FIM),
+         DEPARTURE_DATAHORA = as.POSIXct(DEPARTURE_DATAHORA),
+         RETURN_DATAHORA = as.POSIXct(RETURN_DATAHORA),
+         data_ref = lubridate::round_date(DATAHORA_INICIO, unit = 'day'))
 
 temp <-  
  sqldf::sqldf(
    'SELECT df.*, fleet.[Power.of.main.engine]
    FROM df LEFT JOIN fleet
-   ON IEMBARCA = CFR and 
-   DATAHORA_INICIO BETWEEN [Event.Start.Date] AND [Event.End.Date]')
+   ON df.IEMBARCA = fleet.CFR AND
+   df.data_ref >= fleet.[Event.Start.Date] AND 
+   df.data_ref <= fleet.[Event.End.Date]')
+
+# Checks
+summary(factor(temp$Power.of.main.engine))
+temp[is.na(temp$Power.of.main.engine),] %>% View
+
+# lista de especies de interesse,  tirada da query dos desembarques
+fao <- c('COM','IIL','SQC','OCT','OMZ',
+         'CTC','OCC','EOI','SQF','OFJ',
+         'OUL','OUW','SQI','SQR','OUM',
+         'OCM','OCZ','SQE','SQM','YHT',
+         'OQD','SQZ','CTL','TDQ','EDT',
+         'SQA','OJJ','SQL','CTR','SQU')
+
+# Embarcações com capturas de cefalopodes na 27.9.a
+emb <-
+temp %>%
+   # restringe a OTB
+   filter(ARTE_CODFAO == 'OTB') %>%
+   # atenção a grafias alternativas para regiao
+   filter(REGIAO_INICIO_EFETIVA == '27.9.a' | REGIAO_FIM_EFETIVA == '27.9.a') %>%
+   select(IEMBARCA) %>%
+   unique
+   
+# Esta tabela permite associar 0 ocorrencia de cefalopodes a zero desembarques
+temp_0 <-
+temp %>%
+   # selecciona as embarcaçoes
+   filter(IEMBARCA %in% emb$IEMBARCA) %>%
+   # restringe a pesca em 27.9.a
+   filter(REGIAO_INICIO_EFETIVA == '27.9.a' | REGIAO_FIM_EFETIVA == '27.9.a') %>%
+   # agrupa especies redundantes
+   mutate(CNTRY = 'PRT',
+          ESPECIE_CODFAO = case_when(!ESPECIE_CODFAO %in% fao ~ 'OTH',
+                                     T ~ as.character(ESPECIE_CODFAO)),
+          Metier_6 = NA,
+          effort = as.numeric((DATAHORA_FIM-DATAHORA_INICIO)/3600)) %>%
+   group_by(CNTRY, IEMBARCA, Power.of.main.engine, ARTE_CODFAO, Metier_6, RETURN_PORTO, DATAHORA_FIM, LANCE_NUM, effort, RECT_ESTAT_FIM_EFETIVO) %>%
+   # se quantidade de cephs e 0, entao numero de especies tambem e 0...
+   summarise(CAPTURA_KG = length(unique(ESPECIE_CODFAO[ESPECIE_CODFAO %in% fao]))) %>%
+   filter(CAPTURA_KG == 0) %>%
+   mutate(ESPECIE_CODFAO = 'Ceph_spp')
+      
+# acrescentamos à tabela temp as linhas com ceph spp = 0      
+temp_1 <-
+   temp %>%
+   filter(IEMBARCA %in% emb$IEMBARCA) %>%
+   # restringe a pesca em 27.9.a
+   filter(REGIAO_INICIO_EFETIVA == '27.9.a' | REGIAO_FIM_EFETIVA == '27.9.a') %>%
+   # agrupa especies redundantes
+   mutate(CNTRY = 'PRT',
+          ESPECIE_CODFAO = case_when(!ESPECIE_CODFAO %in% fao ~ 'OTH',
+                                     T ~ as.character(ESPECIE_CODFAO)),
+          Metier_6 = NA,
+          effort = as.numeric((DATAHORA_FIM-DATAHORA_INICIO)/3600)) %>%
+   group_by(CNTRY, IEMBARCA, Power.of.main.engine, ARTE_CODFAO, Metier_6, RETURN_PORTO, DATAHORA_FIM, LANCE_NUM, effort, RECT_ESTAT_FIM_EFETIVO, ESPECIE_CODFAO) %>%
+   summarise(CAPTURA_KG = sum(CAPTURA_KG)) %>%
+   filter(ESPECIE_CODFAO != 'OTH') %>%
+   # acrescenta as linhas nulas
+   rbind(., temp_0) %>%
+   # anonimiza
+   mutate(IEMBARCA = paste(substr(IEMBARCA,1,3), as.numeric(IEMBARCA, sep = "")))
+
+write.csv(temp_1, file = 'ceph_catch_effort_PT.csv')
 
 ```
+
+Tabela agrupada por dias de viagem, à viagem:
+
+```{r}
+# Esta tabela permite associar 0 ocorrencia de cefalopodes a zero desembarques
+temp_2 <-
+temp %>%
+   # selecciona as embarcaçoes
+   filter(IEMBARCA %in% emb$IEMBARCA) %>%
+   # restringe a pesca em 27.9.a
+   filter(REGIAO_INICIO_EFETIVA == '27.9.a' | REGIAO_FIM_EFETIVA == '27.9.a') %>%
+   # agrupa especies redundantes
+   mutate(CNTRY = 'PRT',
+          ESPECIE_CODFAO = case_when(!ESPECIE_CODFAO %in% fao ~ 'OTH',
+                                     T ~ as.character(ESPECIE_CODFAO)),
+          Metier_6 = NA) %>%
+   group_by(CNTRY, DEPARTURE_DATAHORA, RETURN_DATAHORA, 
+            IEMBARCA, Power.of.main.engine, ARTE_CODFAO, 
+            Metier_6, RETURN_PORTO,  RECT_ESTAT_FIM_EFETIVO, IDTRIP) %>%
+   # se quantidade de cephs e 0, entao numero de especies tambem e 0...
+   summarise(CAPTURA_KG = length(unique(ESPECIE_CODFAO[ESPECIE_CODFAO %in% fao]))) %>%
+   filter(CAPTURA_KG == 0) %>%
+   mutate(ESPECIE_CODFAO = 'Ceph_spp')
+      
+# acrescentamos à tabela temp as linhas com ceph spp = 0      
+temp_3 <-
+   temp %>%
+   filter(IEMBARCA %in% emb$IEMBARCA) %>%
+   # restringe a pesca em 27.9.a
+   filter(REGIAO_INICIO_EFETIVA == '27.9.a' | REGIAO_FIM_EFETIVA == '27.9.a') %>%
+   # agrupa especies redundantes
+   mutate(CNTRY = 'PRT',
+          ESPECIE_CODFAO = case_when(!ESPECIE_CODFAO %in% fao ~ 'OTH',
+                                     T ~ as.character(ESPECIE_CODFAO)),
+          Metier_6 = NA) %>%
+   group_by(CNTRY, DEPARTURE_DATAHORA, RETURN_DATAHORA, 
+            IEMBARCA, Power.of.main.engine, ARTE_CODFAO, 
+            Metier_6, RETURN_PORTO,  RECT_ESTAT_FIM_EFETIVO, ESPECIE_CODFAO,IDTRIP) %>%
+   summarise(CAPTURA_KG = sum(CAPTURA_KG)) %>%
+   filter(ESPECIE_CODFAO != 'OTH') %>%
+   # acrescenta as linhas nulas
+   rbind(., temp_2) %>%
+   # anonimiza
+   mutate(IEMBARCA = paste(substr(IEMBARCA,1,3), as.numeric(IEMBARCA, sep = ""))) %>%
+   # calcula o esforço em fishing days
+   mutate(effort = (RETURN_DATAHORA - DEPARTURE_DATAHORA) %>% as.numeric()) %>% 
+   # converte no formato final 
+   ungroup %>%
+   select(CNTRY,
+             IEMBARCA,
+             Power.of.main.engine,
+             ARTE_CODFAO,
+             Metier_6,
+             RETURN_PORTO,
+             RETURN_DATAHORA,
+             IDTRIP,
+             effort,
+             RECT_ESTAT_FIM_EFETIVO,
+             ESPECIE_CODFAO,
+             CAPTURA_KG)
+
+
+
+
+write.csv(temp_3, file = 'ceph_catch_effort_trip_fdays_PT.csv') 
+```
+
 

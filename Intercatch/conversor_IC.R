@@ -22,7 +22,8 @@ land<-merge(land,portos[,c("codporto","nome","zona")],
       by.y = "codporto")
 
 # restringe desembarques a codigos fao tirados do ASFIS
-fao<-c("SQC","OCT","OMZ","CTC","OCC","EOI","SQF","OFJ","OUL","OUW","SQI","SQR","OUM","OCM","OCZ","SQE","SQM","YHT","OQD","SQZ","CTL","TDQ","EDT","SQA","OJJ","SQL","CTR")
+## no dia 26.04 foi acrescentado o SQU, que foi alterado para OMZ
+fao<-c("SQC","OCT","OMZ","CTC","OCC","EOI","SQF","OFJ","OUL","OUW","SQI","SQR","OUM","OCM","OCZ","SQE","SQM","YHT","OQD","SQZ","CTL","TDQ","EDT","SQA","OJJ","SQL","CTR","SQU")
 
 # transforma tabela
 land_export <-
@@ -42,7 +43,9 @@ land %>%
   group_by(COD_FAO, zona, MES, ARTE_EU) %>%
   # desembarques à zona, em kg
   summarise(QESTIMADA = sum(DESEMBARQUE, na.rm = T))
-  
+
+# altera 'SQU' para 'OMZ' para ficar de acordo com o nome do stock do ICES
+land_export[land_export$COD_FAO == 'SQU',]$COD_FAO <- 'OMZ'  
 
 # save(land, file="C://Google Drive//Polvices//WGCEPH 2020//desemb_mes_2019.Rdata")
 
