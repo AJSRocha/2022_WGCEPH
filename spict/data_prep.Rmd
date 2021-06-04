@@ -1,0 +1,373 @@
+---
+title: "Data prep for the SPiCT exercise in WGCEPH 2021"
+output: html_notebook
+---
+
+```{r, message = FALSE}
+library(dplyr)
+library(ggplot2)
+library(spict)
+library(gridExtra)
+```
+
+* Importar dados desembarques
+
+```{r}
+# Importa dados
+land <- read.csv("C://Google Drive//dados_pnab//desembarques//ceph_land.csv",
+               sep = ",", dec = ".")
+
+slv<-read.csv("C://Google Drive//dados_pnab//especies_slv/slv.csv")
+portos<-read.csv("C://Google Drive//dados_pnab//portos_slv//codigos_portos.csv")
+
+# acrescenta codigos fao da tabela SLV 
+# land<-merge(land,slv[,c("ESPECIE_SLV","COD_FAO","FAMILIA")],all.x=T,all.y=F,by="ESPECIE_SLV")
+
+# acrescenta portos slv
+land<-merge(land,portos[,c("codporto","nome","zona")],
+      all.x = T,
+      all.y = F,
+      by.x = "PORTO_SLV",
+      by.y = "codporto")
+
+land <-
+land %>%
+  select(nome, zona, COD_FAO, ANO, MES, ARTE_EU, DESEMBARQUE) %>%
+  #filter(ANO == 2020) %>%
+  # remove artes espanholas
+  filter(ARTE_EU %in% unique(land$ARTE_EU)[!grepl("SP_", unique(land$ARTE_EU))]) %>%
+  #filter(COD_FAO %in% fao) %>%
+  mutate(zona = factor(case_when(zona == "NW" ~ "27.9.a.c.n",
+                                 zona == "SW" ~ "27.9.a.c.s",
+                                 T ~ "27.9.a.s.a")),
+         # Acerta niveis com formato intercatch
+         ARTE_EU = factor(case_when(ARTE_EU == 'DTRAWL' ~ "OTB",
+                                    ARTE_EU == 'PSEINERS' ~ 'PS_SPF_0_0_0',
+                                    T ~ 'MIS_MIS_0_0_0'))) %>%
+  group_by(COD_FAO, zona, MES, ARTE_EU) %>%
+  # desembarques à zona, em kg
+  summarise(QESTIMADA = sum(DESEMBARQUE, na.rm = T))
+
+```
+
+* Carregar vendas-dia
+
+```{r}
+load("C:/Google Drive/dados_pnab/vendas-dia/vd.RData")
+
+#vd <- vd %>% filter(year_sale %in% c(2019, 2020))
+```
+
+* Carregar fleet
+
+```{r}
+fleet <- read.csv('C:/Google Drive/dados_pnab/fleet_register/vesselRegistryListResults.csv',
+                  sep = ";",
+                  dec = '.',
+                  na.strings = "",
+                  encoding = 'utf-8',
+                  quote = "")
+
+fleet <-
+fleet %>%
+  # filter(CFR %in% unique(df$IEMBARCA)) %>%
+  mutate(Event.Start.Date = as.POSIXct(Event.Start.Date, format = '%Y-%m-%d'),
+         Event.End.Date = as.POSIXct(Event.End.Date, format = '%Y-%m-%d'))
+```
+
+* Remover embarcaçoes nao PT
+
+```{r}
+index <- unique(vd$IEMBARCA) %>%
+  .[grepl('^PRT', .)] %>%
+  .[. != 'PRTNOREGISTR']
+  
+vd <- vd[vd$IEMBARCA %in% index,]
+
+vd <- vd %>%
+  filter(EGRUPART == 'MIS_MIS') %>%
+  filter(zona == '27.9.a.s.a')
+```
+
+* unir vendas-dia e fleet
+
+```{r}
+
+# o ouput deste chunk ta gravado no vd.Rdata
+
+# merge "df" with "fleet" - with the info of interest
+fleet_key<-fleet[fleet$CFR %in% unique(vd$IEMBARCA), c("CFR","Event.Start.Date","Event.End.Date", "Main.fishing.gear", "Subsidiary.fishing.gear.1", "LOA","Power.of.main.engine")]
+
+vd_split = split(vd, list(vd$year_sale))
+
+vd_split = lapply(vd_split, function(x){
+   sqldf::sqldf("SELECT * 
+  FROM x LEFT JOIN fleet_key 
+      ON x.IEMBARCA = fleet_key.CFR AND IDATVEND BETWEEN fleet_key.[Event.Start.Date] AND fleet_key.[Event.End.Date]")
+})
+  
+  
+# vd <- sqldf::sqldf("SELECT * 
+#   FROM vd LEFT JOIN fleet_key 
+#       ON vd.IEMBARCA = fleet_key.CFR AND IDATVEND BETWEEN fleet_key.[Event.Start.Date] AND fleet_key.[Event.End.Date]")
+
+vd = do.call(rbind, vd_split)
+
+save(vd, file = 'vd.Rdata')
+```
+
+* restringe ao que nos interessa: polivalente no Sul
+
+```{r}
+df <- vd %>%
+  filter(IEMBARCA != 'PRTNOREGISTR') %>%
+  #filter(EGRUPART == 'MIS_MIS') %>%
+  #filter(zona == '27.9.a.s.a') %>%
+  mutate(LOA = as.numeric(LOA),
+         frota = ifelse(LOA > 9, "C", "L"),
+         # cria o campo da semana
+         week_sale = lubridate::week(lubridate::ymd(IDATVEND)),
+         # cria o campo fishing season
+         f_season = case_when(month_sale %in% c(10,12) ~ as.numeric(as.character(year_sale)),
+                              TRUE ~ as.numeric(as.character(year_sale))-1)) %>%
+  group_by(PORTO, year_sale, month_sale, week_sale, f_season, IDATVEND, IEMBARCA, LOA, Power.of.main.engine,
+          Main.fishing.gear, Subsidiary.fishing.gear.1, frota) %>%
+  summarise(OCC = sum(QVENDA[EESPECIE %in% c('OCC','OCT')]),
+            OTHER = sum(QVENDA[!EESPECIE %in% c('OCC','OCT')]),
+            prop = OCC/(OTHER + OCC))
+```
+
+* Criterios de selecção de frota PARA CADA ANO
+  * separaçao entre local e costeira: >9
+  * separação entre sotavento e barlavento (long_78): 
+  * destacar embarcações com proporção de OCC grande nos desembarques (média >= 0.8)
+  * destacar numero de meses activo (11 em cada 12 meses)
+  * destacar percentil superior de viagens (???)
+
+```{r}
+df_ag <- df %>%
+  mutate(ID_uniq = paste(IEMBARCA, IDATVEND),
+         month_uniq = paste(year_sale, month_sale)) %>%
+  group_by(IEMBARCA) %>%
+  summarise(
+    # numero de meses em que trabalhou
+    n_months = length(unique(month_uniq)),
+    # numero de viagens que fez no periodo inteiro
+    total_trips = length(unique(ID_uniq)),
+    # proporçao media de occ nos desembarques
+    prop_mean = mean(prop),
+    # proporção mediana de occ nos desembarques
+    prop_med = median(prop),
+    # minimo de meses/ano - MUDAR FINAL PARA MINIMO APOS TER OS DADOS TODOS
+    meses_ano = tapply(month_sale, year_sale, function(x){length(unique(x))}) %>%
+      tidyr::replace_na(.,0) %>% min,
+    porto_principal = names(which.max(tapply(OCC + OTHER, PORTO, sum)))
+  )
+```
+
+* Aplicar o crivo para escolher embarcações
+
+```{r}
+frota_ref <-
+df_ag %>% 
+  filter(total_trips > quantile(total_trips, 0.95)) %>%
+  filter(prop_med > 0.9) %>%
+  #filter(meses_ano >= 11) %>%
+  #filter() %>%
+  select(IEMBARCA) %>%
+  unique
+```
+
+* Vamos recuperar o objecto *df* porque ele já agrega o vendas-dia à viagem.
+
+```{r}
+venda_frota <- df %>% filter(IEMBARCA %in% frota_ref$IEMBARCA)
+```
+
+* Calcular info das viagens que precisamos: dias de pesca, esforço, LPUE
+
+```{r}
+venda_frota$dia <- 0
+a<-Sys.time()
+for(i in unique(venda_frota$IEMBARCA)){
+  # ordenamos os desembarques de cada embarcacao por ordem cronologica
+  ordem <- order(venda_frota[venda_frota$IEMBARCA==i,"IDATVEND"])
+ 
+  # criamos o indice de cada um desses desembarques
+  indice <- nrow(venda_frota[venda_frota$IEMBARCA==i,])
+  j <- 1
+  
+  while(j < indice){
+    venda_frota[venda_frota$IEMBARCA==i,][ordem,]$dia[j+1] <-
+      venda_frota[venda_frota$IEMBARCA ==i,][ordem,]$IDATVEND[j+1] -
+      venda_frota[venda_frota$IEMBARCA==i,][ordem,]$IDATVEND[j]
+    j<-j+1
+  }}
+b<-Sys.time()
+b-a
+```
+
+* Acrescentar variáveis que faltam: Long_78 (Portos a Este e a Oeste de Faro) e semana de pesca
+
+```{r}
+venda_frota =
+venda_frota %>%
+  mutate(
+    # semana de pesca
+    week_sale = lubridate::week(lubridate::ymd(IDATVEND)),
+    week_uniq = paste(year_sale, week_sale),
+    # barlavento vs sotavento
+    long_78 = case_when(PORTO %in% c('FUZETA', 'OLHAO', 'LUZIA', 'TAVIRA', 'VRSA') ~ 7,
+                        TRUE ~ 8))
+```
+```{r save2}
+save(venda_frota, file = 'venda_frota.Rdata')
+```
+
+
+* excluimos dias de pesca superior a 2 (fim-de-semana, periodo pausa, avaria... silvia e joao fizeram algo parecido (só contavam o segundo de dois dias consecutivos de pesca))
+
+```{r}
+venda_frota <-
+  venda_frota %>% 
+  filter(dia <= 2 & dia > 0)
+```
+
+* calculo de LPUE(kg/fd)
+
+```{r}
+venda_frota <-
+  venda_frota %>% mutate(LPUE = OCC/dia)
+```
+
+* GLM
+
+```{r}
+# #month
+step.model.month <- glm(log(LPUE + 0.01) ~ as.factor(f_season) + as.factor(week_uniq) + 
+                          frota + Power.of.main.engine + LOA + prop,
+                        family = gaussian(link = identity),
+                        data = venda_frota)
+
+step.model.month <- MASS::stepAIC(step.model.month,
+                      direction = "forward",
+                      trace = TRUE)
+
+summary(step.model.month)
+
+MOD_1 <- step.model.month
+```
+
+
+```{r}
+df_index =
+expand.grid(f_season = unique(venda_frota$f_season),
+            week_uniq = unique(venda_frota$week_uniq),
+            frota="L",
+            Power.of.main.engine = median(venda_frota$Power.of.main.engine),
+            LOA = median(venda_frota$LOA),
+            Long_78 = "8",
+            prop = median(venda_frota$prop))
+
+df_index$index<-predict(MOD_1,
+                        newdata = df_index)
+```
+
+
+## Criar o resto dos indices
+
+```{r}
+# desembarques de OCC para o periodo
+desemb <-
+vd %>%
+  filter(EESPECIE == 'OCC') %>%
+  # cria o campo da semana
+  mutate(week_sale = lubridate::week(lubridate::ymd(IDATVEND)),
+         week_uniq = paste(year_sale, week_sale)) %>%
+  group_by(week_uniq) %>%
+  summarise(land = sum(QVENDA)/1000) 
+```
+
+
+
+# Trial 1 - Prior defaults
+
+```{r,echo=T,include=T,warning=F,message=F}
+
+Modelo_year <- list(obsC = desemb$land,
+                    timeC = desemb$week_uniq,
+                    obsI = df_index$index,
+                    timeI = df_index$week_uniq)
+
+
+Modelo_year$timeI <- df_index$week_)
+
+Modelo_year$obsI <- df_index$index
+Modelo_year$timeI <- df_index$week_uniq
+```
+
+land_year = total catch in the Algarve, index=stdLPUE
+obsC (catch observations), timeC (time of catch observations), obsI (index observations), and timeI (time of index observations).
+
+```{r trial_1, message = F, warning = T, echo = F, include = F}
+
+res <- fit.spict(Modelo_year)
+res <- check.ini(res.year)
+
+```
+
+```{r, warning=F,include=T,echo=F,message=F}
+res$opt$convergence %>% print#should equal 0
+all(is.finite(resr$sd)) %>% print #should be TRUE
+calc.bmsyk(res) %>% print # should be between 0.1 and 0.9
+calc.om(res) %>% print # should not span more than 1 order of magnitude
+
+res$check.ini$resmat %>% print #the estimates should be the same for all initial values 
+```
+
+## Plots
+
+```{r}
+plotspict.biomass(res)
+
+plotspict.bbmsy(res)
+
+plotspict.ffmsy(res)
+
+plotspict.fb(res)
+ 
+plotspict.production(res)
+
+par(mfrow = c(2,2))
+    plotspict.bbmsy(res)
+    plotspict.ffmsy(res)
+    plotspict.fb(res)
+    plotspict.production(res, n.plotyears = 40)
+par(mfrow = c(1,1))
+
+plotspict.diagnostic(calc.osa.resid(res))
+```
+
+
+# Descritivas
+
+* peso desembarcado e total de viagens por porto
+
+```{r}
+df %>%
+  mutate(ID_uniq = paste(IEMBARCA, IDATVEND)) %>%
+  group_by(PORTO) %>%
+  summarise(total_trips= length(unique(ID_uniq)),
+            total_weight= sum(OCC),
+            mean_weight= mean(OCC)) %>%
+  ggplot()+
+  geom_bar(stat="sum", aes(x= PORTO, y=total_weight)) +
+  theme_light() +
+  theme(axis.text.x =element_text(angle =90))+
+  xlab("Landing Port") +    
+  ylab("Landed weight ton") #+  ggsave(file="Outputs/df_S_poly_PORTS_Weight.jpeg")
+```
+
+
+
+
