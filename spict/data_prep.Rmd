@@ -10,6 +10,8 @@ library(spict)
 library(gridExtra)
 ```
 
+* **É PRECISO ACTUALIZAR O SCRIPT PARA A PARTE DO FROTA DEFININDA ANUALMENTE PARA FICAR DE ACORDO COM A FROTA PARA O PERIODO COMPLETO**
+
 * Importar dados desembarques
 
 ```{r}
@@ -126,16 +128,64 @@ df <- vd %>%
   mutate(LOA = as.numeric(LOA),
          frota = ifelse(LOA > 9, "C", "L"),
          # cria o campo da semana
-         week_sale = lubridate::week(lubridate::ymd(IDATVEND)),
+         #week_sale = lubridate::week(lubridate::ymd(IDATVEND)),
          # cria o campo fishing season
-         f_season = case_when(month_sale %in% c(10,12) ~ as.numeric(as.character(year_sale)),
+         quarter_sale = factor(case_when(month_sale %in% c('01', '02', '03') ~ 'Q1',
+                                              month_sale %in% c('04', '05', '06') ~ 'Q2',
+                                              month_sale %in% c('07', '08', '09') ~ 'Q3',
+                                              TRUE ~'Q4')),
+         f_season = case_when(month_sale %in% c(10:12) ~ as.numeric(as.character(year_sale)),
                               TRUE ~ as.numeric(as.character(year_sale))-1)) %>%
-  group_by(PORTO, year_sale, month_sale, week_sale, f_season, IDATVEND, IEMBARCA, LOA, Power.of.main.engine,
+  group_by(PORTO, year_sale, month_sale, quarter_sale, f_season, IDATVEND, IEMBARCA, LOA, Power.of.main.engine,
           Main.fishing.gear, Subsidiary.fishing.gear.1, frota) %>%
   summarise(OCC = sum(QVENDA[EESPECIE %in% c('OCC','OCT')]),
             OTHER = sum(QVENDA[!EESPECIE %in% c('OCC','OCT')]),
             prop = OCC/(OTHER + OCC))
+
+
 ```
+
+# Pesquisa de falhas no cruzamento:
+
+Algumas embarcações apresentam vendas após a data de desmantelamento no fleet register. Nos chunks seguintes averiguamos a dimensão dessa discrepância. Alguns casos devem-se a possíveis erros no registo (especialmente os que remontam a 1900 e troca o passo), outros têm a haver com desembarques de embarcações das armações de atum/aquaculturas (TUNIPEX e afins). No geral, perdas nunca ultrapassam o 1.16 % do OCC desembarcado em cada ano
+
+* 1 – Numero embarcações por zona
+
+* 2 – Numero de viagens por zona
+
+* 3 – peso polvo por zona
+
+```{r}
+data_lost <- df %>%
+  filter(is.na(LOA)) %>%
+  filter(is.na(Power.of.main.engine))
+
+teste <- data_lost %>%
+  mutate(id_uniq = paste(IEMBARCA, IDATVEND),
+         long_78 = case_when(PORTO %in% c('FUZETA', 'OLHAO', 'LUZIA', 'TAVIRA', 'VRSA') ~ 7,
+                        TRUE ~ 8)) %>%
+  group_by(year_sale, long_78) %>%
+  summarise(
+    nr_vessels = length(unique(IEMBARCA)),
+    nr_trips = length(unique(id_uniq)),
+    peso_occ = sum(OCC)) %>%
+  merge(., df %>% group_by(year_sale) %>%
+  summarise(QVENDA = sum(OCC)),
+  by = 'year_sale') %>%
+  mutate(per = peso_occ/QVENDA * 100)
+
+
+# ver quantas viagens cada emb fez em cada ano
+# data_lost %>%
+#   group_by(IEMBARCA, year_sale) %>%
+#   summarise(viag = length(unique(IDATVEND))) %>%
+#   reshape2::dcast(IEMBARCA ~ year_sale) %>% View
+
+
+# TAU!
+
+```
+
 
 * Criterios de selecção de frota PARA CADA ANO
   * separaçao entre local e costeira: >9
@@ -145,10 +195,12 @@ df <- vd %>%
   * destacar percentil superior de viagens (???)
 
 ```{r}
+
+# para determinar frota ano a ano
 df_ag <- df %>%
   mutate(ID_uniq = paste(IEMBARCA, IDATVEND),
          month_uniq = paste(year_sale, month_sale)) %>%
-  group_by(IEMBARCA) %>%
+  group_by(IEMBARCA, year_sale) %>%
   summarise(
     # numero de meses em que trabalhou
     n_months = length(unique(month_uniq)),
@@ -163,30 +215,74 @@ df_ag <- df %>%
       tidyr::replace_na(.,0) %>% min,
     porto_principal = names(which.max(tapply(OCC + OTHER, PORTO, sum)))
   )
+
+# para determinar uma frota consistente ao longo do periodo
+df_ag_total <- df %>%
+  mutate(ID_uniq = paste(IEMBARCA, IDATVEND),
+         month_uniq = paste(year_sale, month_sale)) %>%
+  group_by(IEMBARCA) %>%
+  summarise(
+    # numero de meses em que trabalhou
+    n_months = length(unique(month_uniq)),
+    # numero de anos em que trabalhou
+    n_anos = length(unique(year_sale)),
+    # numero de viagens que fez no periodo inteiro
+    total_trips = length(unique(ID_uniq)),
+    # proporçao media de occ nos desembarques
+    prop_mean = mean(prop),
+    # proporção mediana de occ nos desembarques
+    prop_med = median(prop),
+    # minimo de meses/ano - MUDAR FINAL PARA MINIMO APOS TER OS DADOS TODOS
+    meses_ano = tapply(month_sale, year_sale, function(x){length(unique(x))}) %>%
+      tidyr::replace_na(.,0) %>% min,
+    porto_principal = names(which.max(tapply(OCC + OTHER, PORTO, sum)))
+  )
 ```
 
-* Aplicar o crivo para escolher embarcações
+* Aplicar o crivo para escolher embarcações em ambos os cenários.
+* Restringido ao top 4 de cada, devido à diminuição de embarcações ao longo dos anos (1995 com 1575 embarcações a 2020 com 706 embarcações)
+* frota periodo completo - Seleccionado embarcações com o minimo de 25 anos de trabalho nos 26 possíveis 
+
 
 ```{r}
-frota_ref <-
+frota_ano <-
 df_ag %>% 
-  filter(total_trips > quantile(total_trips, 0.95)) %>%
+  group_by(year_sale) %>%
+  filter(total_trips > quantile(total_trips, 0.8)) %>%
   filter(prop_med > 0.9) %>%
+  arrange(desc(total_trips),.by_group=TRUE) %>%
+  top_n( 40, total_trips) %>%
   #filter(meses_ano >= 11) %>%
   #filter() %>%
   select(IEMBARCA) %>%
   unique
+
+frota_total  <-
+df_ag_total %>% 
+  #filter(total_trips > quantile(total_trips, 0.8)) %>%
+  filter(prop_med > 0.9) %>%
+  #arrange(desc(total_trips),.by_group=TRUE) %>%
+  #top_n( 40, total_trips) %>%
+  #filter(meses_ano >= 9) %>%
+  filter(n_anos >= 25) %>%
+  select(IEMBARCA)
 ```
 
 * Vamos recuperar o objecto *df* porque ele já agrega o vendas-dia à viagem.
 
 ```{r}
-venda_frota <- df %>% filter(IEMBARCA %in% frota_ref$IEMBARCA)
+#frota fixa ao longo do tempo
+venda_frota <- df %>% filter(IEMBARCA %in% frota_total$IEMBARCA)
+#frota escolhida em cada ano
+venda_frota_ano <- df %>% filter(paste (IEMBARCA, year_sale) %in% paste(frota_ano$IEMBARCA, frota_ano$year_sale))
+
 ```
 
 * Calcular info das viagens que precisamos: dias de pesca, esforço, LPUE
 
 ```{r}
+
+# frota comum ao periodo completo
 venda_frota$dia <- 0
 a<-Sys.time()
 for(i in unique(venda_frota$IEMBARCA)){
@@ -205,25 +301,79 @@ for(i in unique(venda_frota$IEMBARCA)){
   }}
 b<-Sys.time()
 b-a
+
+# frota seleccionada ano a no
+venda_frota_ano$dia <- 0
+a<-Sys.time()
+for(i in unique(venda_frota_ano$IEMBARCA)){
+  # ordenamos os desembarques de cada embarcacao por ordem cronologica
+  ordem <- order(venda_frota_ano[venda_frota_ano$IEMBARCA==i,"IDATVEND"])
+ 
+  # criamos o indice de cada um desses desembarques
+  indice <- nrow(venda_frota_ano[venda_frota_ano$IEMBARCA==i,])
+  j <- 1
+  
+  while(j < indice){
+    venda_frota_ano[venda_frota_ano$IEMBARCA==i,][ordem,]$dia[j+1] <-
+      venda_frota_ano[venda_frota_ano$IEMBARCA ==i,][ordem,]$IDATVEND[j+1] -
+      venda_frota_ano[venda_frota_ano$IEMBARCA==i,][ordem,]$IDATVEND[j]
+    j<-j+1
+  }}
+b<-Sys.time()
+b-a
 ```
+
 
 * Acrescentar variáveis que faltam: Long_78 (Portos a Este e a Oeste de Faro) e semana de pesca
 
 ```{r}
+# periodo completo
 venda_frota =
 venda_frota %>%
   mutate(
     # semana de pesca
-    week_sale = lubridate::week(lubridate::ymd(IDATVEND)),
-    week_uniq = paste(year_sale, week_sale),
+    #week_uniq = difftime(IDATVEND, "1995-01-02 GMT", units = 'weeks' ) %>% trunc(0),
     # barlavento vs sotavento
     long_78 = case_when(PORTO %in% c('FUZETA', 'OLHAO', 'LUZIA', 'TAVIRA', 'VRSA') ~ 7,
-                        TRUE ~ 8))
-```
-```{r save2}
-save(venda_frota, file = 'venda_frota.Rdata')
+                        TRUE ~ 8),
+    quarter_sale = factor(case_when(month_sale %in% c('01', '02', '03') ~ 'Q1',
+                                              month_sale %in% c('04', '05', '06') ~ 'Q2',
+                                              month_sale %in% c('07', '08', '09') ~ 'Q3',
+                                              TRUE ~'Q4')),
+    f_season = case_when(month_sale %in% c(10:12) ~ as.numeric(as.character(year_sale)),
+                              TRUE ~ as.numeric(as.character(year_sale))-1),
+    Power.of.main.engine = as.numeric(Power.of.main.engine))
+
+
+# anual
+venda_frota_ano =
+venda_frota_ano %>%
+  mutate(
+    # semana de pesca
+    #week_uniq = difftime(IDATVEND, "1995-01-02 GMT", units = 'weeks' ) %>% trunc(0),
+    # barlavento vs sotavento
+    long_78 = case_when(PORTO %in% c('FUZETA', 'OLHAO', 'LUZIA', 'TAVIRA', 'VRSA') ~ 7,
+                        TRUE ~ 8),
+    quarter_sale = factor(case_when(month_sale %in% c('01', '02', '03') ~ 'Q1',
+                                              month_sale %in% c('04', '05', '06') ~ 'Q2',
+                                              month_sale %in% c('07', '08', '09') ~ 'Q3',
+                                              TRUE ~'Q4')),
+    f_season = case_when(month_sale %in% c(10:12) ~ as.numeric(as.character(year_sale)),
+                              TRUE ~ as.numeric(as.character(year_sale))-1),
+    Power.of.main.engine = as.numeric(Power.of.main.engine))
 ```
 
+* Salva  Rdata com o calculo do intervalo de dias de desembaruqe  ja tiha corrido previamente o passo seguinte (adicionado a semana e long78)
+* o r space data_prep5_6_2021 n tem o intervalo de tempo 
+
+enda_frota, file = 'venda_frota.Rdata')
+
+```{r save2}
+save(venda_frota, file = 'venda_frota.Rdata')
+save(venda_frota_ano, file = 'venda_frota_ano.Rdata')
+```
+
+## Dados da frota constante
 
 * excluimos dias de pesca superior a 2 (fim-de-semana, periodo pausa, avaria... silvia e joao fizeram algo parecido (só contavam o segundo de dois dias consecutivos de pesca))
 
@@ -237,116 +387,270 @@ venda_frota <-
 
 ```{r}
 venda_frota <-
-  venda_frota %>% mutate(LPUE = OCC/dia)
+  venda_frota %>% 
+  filter(!is.na(LOA)) %>%
+  filter(!is.na(Power.of.main.engine)) %>%
+  mutate(LPUE = OCC/dia)
 ```
 
-* GLM
+## GLMM da frota constante
+
+```{r}
+# exploraçao da matriz de correlacoes
+venda_frota %>%
+  mutate(LPUE = log(LPUE + 0.01),
+         year_sale = as.numeric(year_sale)) %>%
+  ungroup %>%
+  select(prop, Power.of.main.engine, LOA, LPUE, year_sale) %>%
+  cor %>%
+  corrplot::corrplot(.)
+
+
+# Foi considerado um modelo com efeitos fixos. Eventualmente, foi rejeitado em detrimento de f_season e quarter_sale com efeitos aleatorios
+# step.model <- glm(log(LPUE + 0.01) ~ as.factor(f_season) + quarter_sale +
+#                           frota + Power.of.main.engine + LOA + prop + long_78 + 
+#                     as.factor(f_season):frota, as.factor(f_season),
+#                         family = gaussian(link = identity),
+#                         data = venda_frota)
+#
+# step.model <-
+# MASS::stepAIC(step.model, direction = "forward",trace = 1)
+#
+# modelo de efeitos aleatorios
+random_model_fs =  lme4::glmer(log(LPUE + 0.01) ~
+                           LOA  + factor(long_78) + 
+                           (1|f_season),
+                         data = venda_frota)
+
+random_model_quarter =  lme4::glmer(log(LPUE + 0.01) ~
+                           LOA  + factor(long_78) + 
+                           (1|f_season) + (1|quarter_sale),
+                         data = venda_frota)
+
+MOD_1_fs <- random_model_fs
+MOD_1_quarter <- random_model_quarter
+
+ggplot(venda_frota) + 
+  geom_point(aes(x = LPUE,
+             y = exp(predict(random_model, venda_frota)),
+             col = PORTO)) + 
+  #facet_wrap(long_78 ~ .) + 
+  stat_function(fun = function(x){x}) + theme(legend.position = 'none')
+```
+
+```{r}
+df_index_fs =
+expand.grid(f_season = unique(venda_frota$f_season),
+            #quarter_sale = unique(venda_frota$quarter_sale),
+            #frota="L",
+            #Power.of.main.engine = median(venda_frota$Power.of.main.engine),
+            LOA = median(venda_frota$LOA),
+            long_78 = "8"
+            #prop = median(venda_frota$prop)
+            )
+
+df_index_quarter =
+expand.grid(f_season = unique(venda_frota$f_season),
+            quarter_sale = unique(venda_frota$quarter_sale),
+            #frota="L",
+            #Power.of.main.engine = median(venda_frota$Power.of.main.engine),
+            LOA = median(venda_frota$LOA),
+            long_78 = "8"
+            #prop = median(venda_frota$prop)
+            )
+
+df_index_fs$index<-exp(predict(MOD_1_fs,
+                        newdata = df_index_fs))
+
+df_index_quarter$index<-exp(predict(MOD_1_quarter,
+                        newdata = df_index_quarter))
+
+hist(df_index_fs$index)
+hist(df_index_quarter$index)
+
+```
+
+## Dados da frota anual
+
+```{r}
+venda_frota_ano <-
+  venda_frota_ano %>% 
+  filter(dia <= 2 & dia > 0)
+```
+
+* calculo de LPUE(kg/fd)
+
+```{r}
+venda_frota_ano <-
+  venda_frota_ano %>% 
+  filter(!is.na(LOA)) %>%
+  filter(!is.na(Power.of.main.engine)) %>%
+  mutate(LPUE = OCC/dia)
+```
+
+## GLM da frota definida anualmente
 
 ```{r}
 # #month
-step.model.month <- glm(log(LPUE + 0.01) ~ as.factor(f_season) + as.factor(week_uniq) + 
+step.model.ano <- glm(log(LPUE + 0.01) ~ as.factor(f_season) + quarter_sale +
                           frota + Power.of.main.engine + LOA + prop,
                         family = gaussian(link = identity),
-                        data = venda_frota)
+                        data = venda_frota_ano)
 
-step.model.month <- MASS::stepAIC(step.model.month,
+step.model.ano <- MASS::stepAIC(step.model.ano,
                       direction = "forward",
                       trace = TRUE)
 
-summary(step.model.month)
+summary(step.model.ano)
 
-MOD_1 <- step.model.month
+MOD_1_ano <- step.model.ano
 ```
-
 
 ```{r}
-df_index =
-expand.grid(f_season = unique(venda_frota$f_season),
-            week_uniq = unique(venda_frota$week_uniq),
-            frota="L",
-            Power.of.main.engine = median(venda_frota$Power.of.main.engine),
-            LOA = median(venda_frota$LOA),
-            Long_78 = "8",
-            prop = median(venda_frota$prop))
+ggplot(venda_frota_ano) + 
+  geom_point(aes(x = log(venda_frota_ano$LPUE+0.01),
+             y = predict(MOD_1_ano, venda_frota_ano)))
 
-df_index$index<-predict(MOD_1,
-                        newdata = df_index)
+ggplot(venda_frota_ano) + 
+  geom_point(aes(x = LPUE,
+             y = exp(predict(MOD_1_ano, venda_frota_ano)),
+             col = PORTO)) + 
+  facet_wrap(PORTO ~ .) + 
+  stat_function(fun = function(x){x}) + theme(legend.position = 'none')
+
 ```
 
+```{r}
+df_index_ano =
+expand.grid(f_season = unique(venda_frota_ano$f_season),
+            quarter_sale = unique(venda_frota_ano$quarter_sale),
+            frota="L",
+            Power.of.main.engine = median(venda_frota_ano$Power.of.main.engine),
+            LOA = median(venda_frota_ano$LOA),
+            Long_78 = "8",
+            prop = median(venda_frota_ano$prop))
 
-## Criar o resto dos indices
+df_index_ano$index<-exp(predict(MOD_1_ano,
+                        newdata = df_index_ano))
+```
+
+## Criar o resto dos indices 
 
 ```{r}
 # desembarques de OCC para o periodo
-desemb <-
-vd %>%
-  filter(EESPECIE == 'OCC') %>%
+desemb_q <-
+df %>%
+  #filter(EESPECIE %in% c('OCC', 'OCT')) %>%
   # cria o campo da semana
-  mutate(week_sale = lubridate::week(lubridate::ymd(IDATVEND)),
-         week_uniq = paste(year_sale, week_sale)) %>%
-  group_by(week_uniq) %>%
-  summarise(land = sum(QVENDA)/1000) 
+  #mutate(week_sale = lubridate::week(lubridate::ymd(IDATVEND)),
+  #       week_uniq = difftime(IDATVEND, "1995-01-02 GMT", units = 'weeks' ) %>% trunc(0)) %>%
+  mutate(quarter_sale = factor(case_when(month_sale %in% c('01', '02', '03') ~ 'Q1',
+                                              month_sale %in% c('04', '05', '06') ~ 'Q2',
+                                              month_sale %in% c('07', '08', '09') ~ 'Q3',
+                                              TRUE ~'Q4'))) %>%
+  group_by(f_season, quarter_sale) %>%
+  summarise(land = sum(OCC)/1000)
+
+# frota constante
+
+index_q <- df_index_quarter %>%
+  filter(!(quarter_sale == 'Q4' & f_season == 1994)) %>%
+  filter(!(quarter_sale == 'Q1' & f_season == 2020)) %>%
+  filter(!(quarter_sale == 'Q2' & f_season == 2020)) %>%
+  filter(!(quarter_sale == 'Q3' & f_season == 2020)) %>%
+  group_by(f_season, quarter_sale) %>%
+  summarise(index = sum(index))
+  
+  #mutate(week_uniq = 1: nrow(df_index)) %>%
+  #select(index)
+
+# frota actualizada anualmente
+
+index_ano <- df_index_ano %>%
+  filter(!(quarter_sale == 'Q4' & f_season == 1994)) %>%
+  filter(!(quarter_sale == 'Q1' & f_season == 2020)) %>%
+  filter(!(quarter_sale == 'Q2' & f_season == 2020)) %>%
+  filter(!(quarter_sale == 'Q3' & f_season == 2020)) %>%
+  group_by(f_season, quarter_sale) %>%
+  summarise(index = sum(index))
+
+```
+## Indices por fishing season
+
+```{r}
+# Modelo com frota anual
+desemb_fs <- df %>%
+  group_by(f_season) %>%
+  summarise(land = sum(OCC)/1000)
+
+index_fs <- df_index_fs %>%
+  group_by(f_season) %>%
+  summarise(index = sum(index))
+  
+
+index_ano_fs <- df_index_ano %>%
+  group_by(f_season) %>%
+  summarise(index = sum(index))
+
+Modelo_ano_fs <- list(obsC = desemb_fs$land,
+                      timeC = desemb_fs$f_season,
+                      obsI = index_ano_fs$index,
+                      timeI = index_ano_fs$f_season)
 ```
 
 
+# Trial 1 - Prior defaults - frota continua ao longo do periodo, trimestral
 
-# Trial 1 - Prior defaults
+```{r,echo=T,include=T,warning=F,message=F, eval = F}
 
-```{r,echo=T,include=T,warning=F,message=F}
-
-Modelo_year <- list(obsC = desemb$land,
-                    timeC = desemb$week_uniq,
-                    obsI = df_index$index,
-                    timeI = df_index$week_uniq)
+# Acrescentar explicaçao desta linda coisa - basicamente, a ordem dos trimestres quando dados sao pensados por fishing season, é Q4 - Q1, Q2, Q3
 
 
-Modelo_year$timeI <- df_index$week_)
 
-Modelo_year$obsI <- df_index$index
-Modelo_year$timeI <- df_index$week_uniq
+
+
+
+
+# Modelo com frota actualizada anualmente
+timeI_ano <-
+  ifelse(index_ano$quarter_sale == "Q4",0,
+         ifelse(index_ano$quarter_sale == "Q1",0.25,
+                ifelse(index_ano$quarter_sale == "Q2",0.50,
+                       ifelse(index_ano$quarter_sale == "Q3",0.75,NA))))
+
+index_ano$timeI = index_ano$f_season + timeI_ano
+ordem_I_ano <- order(index_ano$timeI)
+
+
+Modelo_year_ano <- list(obsC = desemb$land[ordem],
+                    timeC = timeC[ordem],
+                    obsI = index_ano$index[ordem_I],
+                    timeI = index_ano$timeI[ordem_I])
+
+
 ```
 
 land_year = total catch in the Algarve, index=stdLPUE
 obsC (catch observations), timeC (time of catch observations), obsI (index observations), and timeI (time of index observations).
 
-```{r trial_1, message = F, warning = T, echo = F, include = F}
-
-res <- fit.spict(Modelo_year)
-res <- check.ini(res.year)
-
-```
 
 ```{r, warning=F,include=T,echo=F,message=F}
 res$opt$convergence %>% print#should equal 0
-all(is.finite(resr$sd)) %>% print #should be TRUE
+all(is.finite(res$sd)) %>% print #should be TRUE
 calc.bmsyk(res) %>% print # should be between 0.1 and 0.9
 calc.om(res) %>% print # should not span more than 1 order of magnitude
 
 res$check.ini$resmat %>% print #the estimates should be the same for all initial values 
 ```
 
-## Plots
 
+# Outputs para o report
 ```{r}
-plotspict.biomass(res)
-
-plotspict.bbmsy(res)
-
-plotspict.ffmsy(res)
-
-plotspict.fb(res)
- 
-plotspict.production(res)
-
-par(mfrow = c(2,2))
-    plotspict.bbmsy(res)
-    plotspict.ffmsy(res)
-    plotspict.fb(res)
-    plotspict.production(res, n.plotyears = 40)
-par(mfrow = c(1,1))
-
-plotspict.diagnostic(calc.osa.resid(res))
+save(desemb_q, desemb_fs, venda_frota, index_q, index_fs,
+     file = 'report.Rdata')
 ```
+
+
 
 
 # Descritivas
@@ -370,4 +674,27 @@ df %>%
 
 
 
+* variação dos desembarques mensais de occ, tendo em conta os dois tipos de "frota de ref".
+
+```{r}
+venda_frota %>%
+  mutate(month_uniq = paste(year_sale, month_sale)) %>%
+  group_by(long_78, month_uniq) %>%
+  summarise(QVENDA = sum(OCC),
+            Nr_viagens = sum(length(unique(IDATVEND)))) %>% 
+  ggplot() + 
+ geom_line(aes(x = month_uniq, y = QVENDA, group  = long_78, col= long_78)) + theme_light()
+            
+```
+
+```{r}
+venda_frota %>%
+ # mutate(month_uniq = paste(year_sale, month_sale)) %>%
+  group_by(long_78, year_sale) %>%
+  summarise(QVENDA = sum(OCC),
+            Nr_viagens = sum(length(IDATVEND))) %>% 
+  ggplot() + 
+ geom_line(aes(x = year_sale, y = QVENDA/Nr_viagens, group  = long_78, col= long_78)) + theme_light()
+            
+```
 

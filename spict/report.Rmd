@@ -1,0 +1,163 @@
+---
+date: "`r Sys.Date()`"
+author: "Alberto Rocha, Ana Moreno, David Dinis"
+title: "SPiCT assessment exercice for 27.9.a.s.a - Portuguese Southern Coast"
+output: 
+  officedown::rdocx_document:
+    mapstyles:
+      Normal: ['First Paragraph']
+---
+
+```{r setup, include=FALSE, echo = F, message = F, warning=F}
+knitr::opts_chunk$set(echo = TRUE, fig.cap = TRUE)
+library(officedown)
+library(officer)
+
+fp <- fp_par(
+  text.align = "center", 
+  padding.bottom = 20, padding.top = 120, 
+  border.bottom = fp_border())
+
+ft <- fp_text(shading.color='#EFEFEF', bold = TRUE)
+```
+
+```{r, echo = F, message = F, warning=F}
+library(ggplot2)
+library(dplyr)
+library(spict)
+load('report.Rdata')
+
+timeC <-
+  ifelse(desemb_q$quarter_sale == "Q4",0,
+         ifelse(desemb_q$quarter_sale == "Q1",0.25,
+                ifelse(desemb_q$quarter_sale == "Q2",0.50,
+                       ifelse(desemb_q$quarter_sale == "Q3",0.75,NA))))
+
+timeC <- desemb_q$f_season + timeC
+ordem <- order(timeC)
+
+timeI <-
+  ifelse(index_q$quarter_sale == "Q4",0,
+         ifelse(index_q$quarter_sale == "Q1",0.25,
+                ifelse(index_q$quarter_sale == "Q2",0.50,
+                       ifelse(index_q$quarter_sale == "Q3",0.75,NA))))
+
+index_q$timeI = index_q$f_season + timeI
+ordem_I <- order(index_q$timeI)
+```
+
+# Introduction
+
+Following the exercises on SPiCT assessment of *Octopus vulgaris* (OCC) in the southern coast of Portugal (27.9.a.s.a) that was performed during WGCEPH 2020, a follow up trial was performed for WGCEPH 2021. Data series was expanded to include the most recent landings data from 2020 as well as older data, up from 1995. Span of the series has thus been significantly increased since the last exercise (2003-2019). 
+
+Data was compiled from the daily landings reports from 'Direcção Geral dos Recursos Marinhos (Directorate-General for Natural Resources, Safety and Maritime Services - DGRM). Data pertaining to vessels landing in ports in 27.9.a.s.a, licensed to operate with polyvalent fishing gears (MIS_MIS stratum) were selected. For each vessel, information on LOA was acquired from Fleet Register.
+
+Raw landings (figure \@ref(fig:landings)) data was obtained by aggregating the landings to each fishing season (September 1st to August 31th). *O. vulgaris* landings in the 27.9.a.s.a region appear to have a plurianual cycle.
+
+```{r fig.id = 'landings', fig.cap = 'landings for the MIS_MIS portuguse fleet in region 27.9.a.s.a.', echo = F, message = F, warning=F}
+desemb_fs %>%
+  group_by(f_season) %>%
+  summarise(land = sum(land)) %>%
+  ggplot() + 
+  geom_line(aes(x = f_season,
+                y = land,
+                group = 1),
+            col = 'black') + 
+  theme_light() + 
+  labs(x = 'fishing season', y = 'tons') + 
+  scale_x_continuous(breaks = c(1994:2020)) + 
+  theme(axis.text.x = element_text(angle = 90),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank())
+```
+
+In order to obtain an abundance index, vessels for a possible reference fleet were selected based on median proportion of OCC in landings/trip and consistency of landings. Vessels considered were active in at least 25 years (out of the 26 that the series spans) and had median proportion of OCC higher than 0.9. For the previously selected vessels, landings were aggregated and effort was estimated by number of fishing days. Fishing days were estimated by the difference between landing dates and differences higher than 2 days were discarded to account for idle time in weekends, repairs, seasonal stops. The resulting LPUE series, in kg landed/fishing day was then standardized with a generalized linear mixed model (GLMM) where proportion of OCC in the landings, LOA and fishing region (longitude 7 or 8) were taken as fixed effects and fishing season and quarter were considered random effects. For the purpose of evaluating a trial with fishing season as time unit, a second abundance index was obtained by standardizing the LPUE series without taking into account quarter  (fig \@ref(fig:abundindice)).
+
+```{r, echo = F, warning=F, message =F, fig.id = 'abundindice', fig.cap = 'Standardized LPUE series for the reference fleet in region 27.9.a.s.a with fishing season as time variable (red) and quarter (blue)'}
+
+ggplot() + 
+  geom_line(aes(x = index_fs$f_season, y = index_fs$index, group = 1), col = 'red') + 
+  geom_line(aes(x =index_q$timeI, y = index_q$index, group = 1), col = 'blue') + 
+  theme_light() + 
+  labs(x = 'fishing season', y = 'tons') + 
+  scale_x_continuous(breaks = c(1994:2020)) + 
+  theme(axis.text.x = element_text(angle = 90),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank())
+```
+
+# Spict trials
+
+SPiCT fitting was performed with R implementation (version 1.2.8), with default priors. Below are presented the results obtained with seasonal data:
+
+## By fishing season
+
+```{r, echo = F, message = F, warning=F}
+Modelo_fs <- list(obsC = desemb_fs$land,
+                    timeC = desemb_fs$f_season,
+                    obsI = index_fs$index,
+                    timeI = index_fs$f_season)
+```
+
+```{r, echo = F, message = F, warning=F}
+res_fs <- fit.spict(Modelo_fs)
+summary(res_fs)
+```
+
+```{r, echo = F, message = F, warning=F}
+plotspict.biomass(res_fs)
+
+plotspict.bbmsy(res_fs)
+
+plotspict.ffmsy(res_fs)
+
+plotspict.fb(res_fs)
+ 
+plotspict.production(res_fs)
+
+par(mfrow = c(2,2))
+    plotspict.bbmsy(res_fs)
+    plotspict.ffmsy(res_fs)
+    plotspict.fb(res_fs)
+    plotspict.production(res_fs, n.plotyears = 40)
+par(mfrow = c(1,1))
+
+plotspict.diagnostic(calc.osa.resid(res_fs))
+```
+
+## By fishing season and quarter
+
+```{r, echo = F, message = F, warning=F}
+Modelo_q <- list(obsC = desemb_q$land[ordem],
+                 timeC = timeC[ordem],
+                 obsI = index_q$index[ordem_I],
+                 timeI = index_q$timeI[ordem_I])
+```
+
+```{r, echo = F, message = F, warning=F}
+res_q <- fit.spict(Modelo_q)
+summary(res_q)
+```
+
+```{r, echo = F, message = F, warning=F}
+plotspict.biomass(res_q)
+
+plotspict.bbmsy(res_q)
+
+plotspict.ffmsy(res_q)
+
+plotspict.fb(res_q)
+ 
+plotspict.production(res_q)
+
+par(mfrow = c(2,2))
+    plotspict.bbmsy(res_q)
+    plotspict.ffmsy(res_q)
+    plotspict.fb(res_q)
+    plotspict.production(res_q, n.plotyears = 40)
+par(mfrow = c(1,1))
+
+plotspict.diagnostic(calc.osa.resid(res_q))
+```
+
+
