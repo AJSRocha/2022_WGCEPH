@@ -1,21 +1,22 @@
-## Landings para WGCEPH2021
+## Landings para WGCEPH2022
 
 library(dplyr)
+source('C:/repos/path.R')
 
-ano <- 2020
+ano = 2021
 
 # Importa dados
-land <- read.csv("C://Google Drive//dados_pnab//desembarques//ceph_land.csv",
+land = read.csv(paste0(dados, 'desembarques//ceph_gux.txt'),
                sep = ",", dec = ".")
 
-slv<-read.csv("C://Google Drive//dados_pnab//especies_slv/slv.csv")
-portos<-read.csv("C://Google Drive//dados_pnab//portos_slv//codigos_portos.csv")
+slv = read.csv(paste0(dados, 'especies_slv/slv.csv'))
+portos = read.csv(paste0(dados, 'portos_slv//codigos_portos.csv'))
 
 # acrescenta codigos fao da tabela SLV 
 # land<-merge(land,slv[,c("ESPECIE_SLV","COD_FAO","FAMILIA")],all.x=T,all.y=F,by="ESPECIE_SLV")
 
 # acrescenta portos slv
-land<-merge(land,portos[,c("codporto","nome","zona")],
+land =merge(land,portos[,c("codporto","nome","zona")],
       all.x = T,
       all.y = F,
       by.x = "PORTO_SLV",
@@ -23,13 +24,19 @@ land<-merge(land,portos[,c("codporto","nome","zona")],
 
 # restringe desembarques a codigos fao tirados do ASFIS
 ## no dia 26.04 foi acrescentado o SQU, que foi alterado para OMZ
-fao<-c("SQC","OCT","OMZ","CTC","OCC","EOI","SQF","OFJ","OUL","OUW","SQI","SQR","OUM","OCM","OCZ","SQE","SQM","YHT","OQD","SQZ","CTL","TDQ","EDT","SQA","OJJ","SQL","CTR","SQU")
+fao = c("SQC","OCT","OMZ","CTC",
+        "OCC","EOI","SQF","OFJ",
+        "OUL","OUW","SQI","SQR",
+        "OUM","OCM","OCZ","SQE",
+        "SQM","YHT","OQD","SQZ",
+        "CTL","TDQ","EDT","SQA",
+        "OJJ","SQL","CTR","SQU")
 
 # transforma tabela
-land_export <-
+land_export =
 land %>%
   select(nome, zona, COD_FAO, ANO, MES, ARTE_EU, DESEMBARQUE) %>%
-  filter(ANO == 2020) %>%
+  filter(ANO == ano) %>%
   # remove artes espanholas
   filter(ARTE_EU %in% unique(land$ARTE_EU)[!grepl("SP_", unique(land$ARTE_EU))]) %>%
   filter(COD_FAO %in% fao) %>%
@@ -45,15 +52,15 @@ land %>%
   summarise(QESTIMADA = sum(DESEMBARQUE, na.rm = T))
 
 # altera 'SQU' para 'OMZ' para ficar de acordo com o nome do stock do ICES
-land_export[land_export$COD_FAO == 'SQU',]$COD_FAO <- 'OMZ'  
+land_export[land_export$COD_FAO == 'SQU',]$COD_FAO = 'OMZ'  
 
 # save(land, file="C://Google Drive//Polvices//WGCEPH 2020//desemb_mes_2019.Rdata")
 
 for(j in unique(land_export$COD_FAO)){
-teste<-data.frame()
-occ<-land_export[land_export$COD_FAO==j,]
-for(i in 1:nrow(occ)){
-  paste("HI,","PT,",ano,",","Month,",
+  teste =data.frame()
+  occ =land_export[land_export$COD_FAO==j,]
+  for(i in 1:nrow(occ)){
+      paste("HI,","PT,",ano,",","Month,",
         occ$MES[i],",",
         occ$ARTE_EU[i],",",
         "AreaUnit,",
@@ -71,10 +78,11 @@ for(i in 1:nrow(occ)){
         occ$QESTIMADA[i]/1000,",",
         occ$QESTIMADA[i]/1000,",",
         "-9,",",,",
-        sep="")->teste[i,1]
-}
+        sep="") -> teste[i,1]
+  }
+  
 write.table(teste,
-            file=paste("C://repos///2021_WGCEPH//IC",ano,j,"27_9a_PT_landings.dat",sep="_")
+            file=paste0('Intercatch/IC',ano,j,"27_9a_PT_landings.dat",sep="_")
             ,sep="",row.names = F,col.names = F,quote=F)
 }
 

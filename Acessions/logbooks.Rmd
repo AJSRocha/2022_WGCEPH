@@ -1,5 +1,5 @@
 ---
-title: "WGCEPH 2020 - effort data"
+title: "WGCEPH 2022 - effort data"
 output: html_notebook
 ---
 
@@ -10,24 +10,25 @@ output: html_notebook
 ```{r setup, echo = F, include = F, warning = F}
 library(dplyr)
 library(data.table)
+source('C:/repos/path.R')
 ```
 
 ```{r}
-load("C:/Google Drive/dados_pnab/logbooks/dpe2020_correct.RData")
-fleet <- read.csv('C:/Google Drive/dados_pnab/fleet_register/vesselRegistryListResults.csv',
+load(paste0(dados,'logbooks/dpe2021_correct.RData'))
+fleet = read.csv(paste0(dados,'fleet_register/vesselRegistryListResults.csv'),
                   sep = ";",
                   dec = '.',
                   na.strings = "",
                   encoding = 'utf-8',
                   quote = "")
 
-fleet <-
+fleet =
 fleet %>%
   # filter(CFR %in% unique(df$IEMBARCA)) %>%
   mutate(Event.Start.Date = as.POSIXct(Event.Start.Date, format = '%Y-%m-%d'),
          Event.End.Date = as.POSIXct(Event.End.Date, format = '%Y-%m-%d'))
 
-df <- dpe2020.correct
+df = dpe2021
 ```
 
 # Checks realizados:
@@ -50,14 +51,14 @@ df <- dpe2020.correct
 
 ```{r}
 # muda formato da departude data por causa da compatibilidade com SQLite
-df <- df %>%
+df = df %>%
   mutate(DATAHORA_INICIO = as.POSIXct(DATAHORA_INICIO),
          DATAHORA_FIM = as.POSIXct(DATAHORA_FIM),
          DEPARTURE_DATAHORA = as.POSIXct(DEPARTURE_DATAHORA),
          RETURN_DATAHORA = as.POSIXct(RETURN_DATAHORA),
          data_ref = lubridate::round_date(DATAHORA_INICIO, unit = 'day'))
 
-temp <-  
+temp =  
  sqldf::sqldf(
    'SELECT df.*, fleet.[Power.of.main.engine]
    FROM df LEFT JOIN fleet
@@ -70,7 +71,7 @@ summary(factor(temp$Power.of.main.engine))
 temp[is.na(temp$Power.of.main.engine),] %>% View
 
 # lista de especies de interesse,  tirada da query dos desembarques
-fao <- c('COM','IIL','SQC','OCT','OMZ',
+fao = c('COM','IIL','SQC','OCT','OMZ',
          'CTC','OCC','EOI','SQF','OFJ',
          'OUL','OUW','SQI','SQR','OUM',
          'OCM','OCZ','SQE','SQM','YHT',
@@ -78,7 +79,7 @@ fao <- c('COM','IIL','SQC','OCT','OMZ',
          'SQA','OJJ','SQL','CTR','SQU')
 
 # Embarcações com capturas de cefalopodes na 27.9.a
-emb <-
+emb =
 temp %>%
    # restringe a OTB
    filter(ARTE_CODFAO == 'OTB') %>%
@@ -88,7 +89,7 @@ temp %>%
    unique
    
 # Esta tabela permite associar 0 ocorrencia de cefalopodes a zero desembarques
-temp_0 <-
+temp_0 =
 temp %>%
    # selecciona as embarcaçoes
    filter(IEMBARCA %in% emb$IEMBARCA) %>%
@@ -107,7 +108,7 @@ temp %>%
    mutate(ESPECIE_CODFAO = 'Ceph_spp')
       
 # acrescentamos à tabela temp as linhas com ceph spp = 0      
-temp_1 <-
+temp_1 =
    temp %>%
    filter(IEMBARCA %in% emb$IEMBARCA) %>%
    # restringe a pesca em 27.9.a
@@ -134,7 +135,7 @@ Tabela agrupada por dias de viagem, à viagem:
 
 ```{r}
 # Esta tabela permite associar 0 ocorrencia de cefalopodes a zero desembarques
-temp_2 <-
+temp_2 =
 temp %>%
    # selecciona as embarcaçoes
    filter(IEMBARCA %in% emb$IEMBARCA) %>%
@@ -154,7 +155,7 @@ temp %>%
    mutate(ESPECIE_CODFAO = 'Ceph_spp')
       
 # acrescentamos à tabela temp as linhas com ceph spp = 0      
-temp_3 <-
+temp_3 =
    temp %>%
    filter(IEMBARCA %in% emb$IEMBARCA) %>%
    # restringe a pesca em 27.9.a
