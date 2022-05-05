@@ -10,7 +10,7 @@ output: html_notebook
 ```{r setup, echo = F, include = F, warning = F}
 library(dplyr)
 library(data.table)
-source('C:/repos/path.R')
+source('C://repos/path.R'); path('local')
 ```
 
 ```{r}

@@ -1,7 +1,7 @@
 ## Landings para WGCEPH2022
 
 library(dplyr)
-source('C:/repos/path.R')
+source('C://repos/path.R'); path('local')
 
 ano = 2021
 
